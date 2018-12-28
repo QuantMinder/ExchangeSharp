@@ -67,6 +67,10 @@ namespace ExchangeSharp
         /// </summary>
         public bool MarginEnabled { get; set; }
 
+        /// <summary>The minimum size of the trade in the unit of "QuoteCurrency".
+        /// </summary>
+        public decimal MinTradeValue { get; set; }
+
         public override string ToString()
         {
             return $"{MarketSymbol}, {BaseCurrency}-{QuoteCurrency}";

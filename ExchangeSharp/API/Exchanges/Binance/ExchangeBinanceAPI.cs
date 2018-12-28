@@ -843,6 +843,7 @@ namespace ExchangeSharp
                 IsBuy = token["isBuyer"].ConvertInvariant<bool>() == true,
                 OrderDate = CryptoUtility.UnixTimeStampToDateTimeMilliseconds(token["time"].ConvertInvariant<long>()),
                 OrderId = token["orderId"].ToStringInvariant(),
+                TradeId = token["id"].ToStringInvariant(),
                 Fees = token["commission"].ConvertInvariant<decimal>(),
                 FeesCurrency = token["commissionAsset"].ToStringInvariant(),
                 MarketSymbol = symbol

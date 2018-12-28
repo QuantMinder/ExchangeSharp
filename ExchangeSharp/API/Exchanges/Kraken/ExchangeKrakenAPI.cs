@@ -18,12 +18,12 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
-
+using ExchangeSharp.API.Common;
 using Newtonsoft.Json.Linq;
 
 namespace ExchangeSharp
 {
-    public sealed partial class ExchangeKrakenAPI : ExchangeAPI
+    public partial class ExchangeKrakenAPI : ExchangeAPI
     {
         public override string BaseUrl { get; set; } = "https://api.kraken.com";
 
@@ -39,12 +39,9 @@ namespace ExchangeSharp
             }
         }
 
-        public ExchangeKrakenAPI()
+        public ExchangeKrakenAPI() : this(null)
         {
-            RequestMethod = "POST";
-            RequestContentType = "application/x-www-form-urlencoded";
-            MarketSymbolSeparator = string.Empty;
-            NonceStyle = NonceStyle.UnixMilliseconds;
+
         }
 
         public override string ExchangeMarketSymbolToGlobalMarketSymbol(string marketSymbol)
@@ -615,6 +612,129 @@ namespace ExchangeSharp
                 { "nonce", nonce }
             };
             await MakeJsonRequestAsync<JToken>("/0/private/CancelOrder", null, payload);
+        }
+    }
+
+    public partial class ExchangeKrakenAPI : ExchangeAPI
+    {
+        public IAPIStatusRepository APIStatusRepository { get; set; }
+        public int ThrottleExpiry = 60 * 15; // seconds
+        public int CounterExpiry = 3; // seconds
+        public int RequestDelay = 3; // seconds
+        public int CounterLimit = 15;
+        private DateTime LastThrottled { get; set; }
+        private DateTime LastDispatched { get; set; }
+
+        public ExchangeKrakenAPI(IAPIStatusRepository apiStatusRepository)
+        {
+            this.APIStatusRepository = apiStatusRepository;
+            RequestMethod = "POST";
+            RequestContentType = "application/x-www-form-urlencoded";
+            MarketSymbolSeparator = string.Empty;
+            NonceStyle = NonceStyle.UnixMilliseconds;
+
+            ExchangeGlobalCurrencyReplacements[typeof(ExchangeKrakenAPI)] = new KeyValuePair<string, string>[]
+            {
+                new KeyValuePair<string, string>("XXBT", "BTC"),
+                new KeyValuePair<string, string>("XETH", "ETH"),
+                new KeyValuePair<string, string>("XXRP", "XRP"),
+                new KeyValuePair<string, string>("XLTC", "LTC"),
+                new KeyValuePair<string, string>("ZUSD", "USD")
+            };
+        }
+
+        protected override async Task<IEnumerable<ExchangeOrderResult>> OnGetMyTradesAsync(string symbol = null,
+            DateTime? afterDate = null, DateTime? beforeDate = null)
+        {
+            string path = "/0/private/TradesHistory";
+            bool hasParams = false;
+            if (afterDate != null)
+            {
+                if (!hasParams)
+                {
+                    path += "?";
+                    hasParams = true;
+                }
+
+                path += "start=" + ((long) afterDate.Value.UnixTimestampFromDateTimeMilliseconds())
+                        .ToStringInvariant();
+            }
+
+            if (beforeDate != null)
+            {
+                if (!hasParams)
+                {
+                    path += "?";
+                    hasParams = true;
+                }
+
+                path += "?end=" + ((long) beforeDate.Value.UnixTimestampFromDateTimeMilliseconds())
+                        .ToStringInvariant();
+            }
+
+            List<ExchangeOrderResult> orders = new List<ExchangeOrderResult>();
+            JToken result = await MakeJsonRequestAsync<JToken>(path);
+            var totalTrades = result["count"].ConvertInvariant<int>();
+            result = result["trades"];
+            //symbol = NormalizeSymbol(symbol);
+            foreach (JProperty order in result)
+            {
+                if (string.IsNullOrEmpty(symbol) || order.Value["pair"].ToStringInvariant() == symbol)
+                {
+                    orders.Add(ParseMyTrade(order.Name, order.Value));
+                }
+            }
+
+            return orders;
+        }
+
+        private ExchangeOrderResult ParseMyTrade(string tradeId, JToken order)
+        {
+            ExchangeOrderResult orderResult = new ExchangeOrderResult
+            {
+                TradeId = tradeId,
+                OrderId = order["ordertxid"].ToStringInvariant(),
+                OrderDate =
+                    CryptoUtility.UnixTimeStampToDateTimeSeconds(order["time"].ConvertInvariant<double>()),
+                MarketSymbol = order["pair"].ToStringInvariant(),
+                IsBuy = (order["type"].ToStringInvariant() == "buy"),
+                Amount = order["vol"].ConvertInvariant<decimal>(),
+                AmountFilled = order["vol"].ConvertInvariant<decimal>(),
+                Price = order["price"].ConvertInvariant<decimal>(),
+                Result = ExchangeAPIOrderResult.Filled
+            };
+            orderResult.AveragePrice = order["cost"].ConvertInvariant<decimal>() / orderResult.AmountFilled;
+            return orderResult;
+        }
+
+        public override async Task<T> MakeJsonRequestAsync<T>(string url, string baseUrl = null,
+            Dictionary<string, object> payload = null, string requestMethod = null)
+        {
+            if (APIStatusRepository != null)
+            {
+                var publicKey = this.PublicApiKey.ToUnsecureString();
+                await APIStatusRepository.DeleteCounterByKeyLt(this.Name, publicKey,
+                    DateTime.UtcNow.AddSeconds(-CounterExpiry));
+                var status = await APIStatusRepository.FindOneByKey(this.Name, publicKey);
+                var throttleEndDate = status.LastThrottled.AddSeconds(ThrottleExpiry);
+                var timeToExpire = throttleEndDate - DateTime.UtcNow;
+                if (throttleEndDate > DateTime.UtcNow)
+                {
+                    throw new APIRateLimitException(
+                        $@"Waiting until throttle expires in {Math.Floor(timeToExpire.TotalMinutes)} mins and {timeToExpire.Seconds} seconds");
+                }
+
+                var dispatchExpiryDate = LastDispatched.AddSeconds(RequestDelay);
+                if (dispatchExpiryDate > DateTime.UtcNow)
+                {
+                    throw new APIRateLimitException("Waiting for last request to be older than " + RequestDelay +
+                                                    "seconds ago.");
+                }
+
+                await APIStatusRepository.AddCounterByKey(this.Name, publicKey, DateTime.UtcNow, CounterExpiry);
+            }
+
+            return await base.MakeJsonRequestAsync<T>(url, baseUrl, payload, requestMethod);
         }
     }
 

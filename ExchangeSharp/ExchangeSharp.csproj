@@ -49,9 +49,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="EngineIoClientDotNet" Version="1.0.7" />
     <PackageReference Include="Microsoft.AspNet.SignalR.Client" Version="2.3.0" />
     <PackageReference Include="Newtonsoft.Json" Version="11.0.2" />
     <PackageReference Include="NLog" Version="4.5.10" />
+    <PackageReference Include="SocketIoClientDotNet" Version="1.0.7.1" />
+    <PackageReference Include="System.Collections.Immutable" Version="1.5.0" />
     <PackageReference Include="System.Configuration.ConfigurationManager" Version="4.5.0" />
   </ItemGroup>
 

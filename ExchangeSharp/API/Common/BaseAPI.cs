@@ -12,6 +12,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 using System;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -25,9 +26,13 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
-
+using ExchangeSharp.API.Common;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+
+using Quobject.EngineIoClientDotNet.Client.Transports;
+using Quobject.SocketIoClientDotNet.Client;
+using WebSocket = Quobject.EngineIoClientDotNet.Client.Transports.WebSocket;
 
 namespace ExchangeSharp
 {
@@ -449,7 +454,7 @@ namespace ExchangeSharp
         /// <param name="payload">Payload, can be null. For private API end points, the payload must contain a 'nonce' key set to GenerateNonce value.</param>
         /// <param name="requestMethod">Request method or null for default</param>
         /// <returns>Result decoded from JSON response</returns>
-        public async Task<T> MakeJsonRequestAsync<T>(string url, string baseUrl = null, Dictionary<string, object> payload = null, string requestMethod = null)
+        public virtual async Task<T> MakeJsonRequestAsync<T>(string url, string baseUrl = null, Dictionary<string, object> payload = null, string requestMethod = null)
         {
             await new SynchronizationContextRemover();
 
@@ -460,6 +465,45 @@ namespace ExchangeSharp
                 return (T)(object)CheckJsonResponse(token);
             }
             return jsonResult;
+        }
+
+        public IoSocketWrapper ConnectIoSocket(string url, string eventName, string channelName, Action<object> action)
+        {
+            var options = new IO.Options()
+            {
+                Secure = true,
+                Upgrade = false,
+                Transports = ImmutableList.Create(new string[] { Polling.NAME, WebSocket.NAME }),
+                ForceNew = true
+            };
+            var socket = IO.Socket(url);
+            DateTime lastEventTime = DateTime.UtcNow;
+
+            socket.On(Socket.EVENT_CONNECT, () =>
+            {
+                socket.Emit("join", channelName);
+            });
+
+            socket.On(eventName, (data) =>
+            {
+                lastEventTime = DateTime.UtcNow;
+                action(data);
+            });
+
+            socket.On("disconnect", (msg) =>
+            {
+                if (Convert.ToString(msg) == "transport error")
+                {
+                    // TODO: return error
+                    return;
+                }
+                if (lastEventTime < DateTime.UtcNow.AddSeconds(-60))
+                {
+                    socket.Connect();
+                }
+            });
+
+            return new IoSocketWrapper();  // TODO: implement wrapper
         }
 
         /// <summary>

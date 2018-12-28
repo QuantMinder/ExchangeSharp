@@ -104,10 +104,27 @@ namespace ExchangeSharp
         protected virtual Task<ExchangeCloseMarginPositionResult> OnCloseMarginPositionAsync(string marketSymbol) => throw new NotImplementedException();
 
         protected virtual IWebSocket OnGetTickersWebSocket(Action<IReadOnlyCollection<KeyValuePair<string, ExchangeTicker>>> tickers, params string[] marketSymbols) => throw new NotImplementedException();
+
+        protected virtual IWebSocket OnGetTickersWebSocket(
+            Action<IReadOnlyCollection<KeyValuePair<string, ExchangeTicker>>> callback) =>
+            OnGetTickersWebSocket(callback);
+        protected virtual IWebSocket OnGetTickersWebSocket(Action<ExchangeTicker> callback, string baseCurrency, string quoteCurrency) => throw new NotImplementedException();
         protected virtual IWebSocket OnGetTradesWebSocket(Action<KeyValuePair<string, ExchangeTrade>> callback, params string[] marketSymbols) => throw new NotImplementedException();
         protected virtual IWebSocket OnGetOrderBookWebSocket(Action<ExchangeOrderBook> callback, int maxCount = 20, params string[] marketSymbols) => throw new NotImplementedException();
         protected virtual IWebSocket OnGetOrderDetailsWebSocket(Action<ExchangeOrderResult> callback) => throw new NotImplementedException();
         protected virtual IWebSocket OnGetCompletedOrderDetailsWebSocket(Action<ExchangeOrderResult> callback) => throw new NotImplementedException();
+
+        protected virtual Task<IEnumerable<ExchangeOrderResult>> OnGetMyTradesAsync(string symbol = null,
+            DateTime? afterDate = null, DateTime? beforeDate = null)
+        {
+            return OnGetCompletedOrderDetailsAsync(symbol, afterDate);
+        }
+
+        protected virtual Task OnGetHistoricalTickersAsync(
+            Func<IEnumerable<ExchangeTicker>, bool> callback, string symbol, DateTime? startDate = null, DateTime? endDate = null) => null;
+
+        protected virtual Task<IEnumerable<ExchangeTransaction>> OnGetWithdrawalHistoryAsync(string symbol) =>
+            new Task<IEnumerable<ExchangeTransaction>>(() => new List<ExchangeTransaction>());
 
         #endregion API implementation
 
@@ -592,6 +609,19 @@ namespace ExchangeSharp
         }
 
         /// <summary>
+        /// ASYNC - Get historical tickers for the exchange
+        /// </summary>
+        /// <param name="callback">Callback for each set of trades. Return false to stop getting trades immediately.</param>
+        /// <param name="symbol">Symbol to get historical data for</param>
+        /// <param name="startDate">Optional UTC start date time to start getting the historical data at, null for the most recent data. Not all exchanges support this.</param>
+        /// <param name="endDate">Optional UTC end date time to start getting the historical data at, null for the most recent data. Not all exchanges support this.</param>
+        public async Task GetHistoricalTickersAsync(Func<IEnumerable<ExchangeTicker>, bool> callback, string symbol, DateTime? startDate = null, DateTime? endDate = null)
+        {
+            await new SynchronizationContextRemover();
+            await OnGetHistoricalTickersAsync(callback, symbol, startDate, endDate);
+        }
+
+        /// <summary>
         /// Get historical trades for the exchange. TODO: Change to async enumerator when available.
         /// </summary>
         /// <param name="callback">Callback for each set of trades. Return false to stop getting trades immediately.</param>
@@ -642,6 +672,11 @@ namespace ExchangeSharp
         public virtual async Task<IEnumerable<ExchangeTransaction>> GetDepositHistoryAsync(string currency)
         {
             return await Cache.CacheMethod(MethodCachePolicy, async () => await OnGetDepositHistoryAsync(currency), nameof(GetDepositHistoryAsync), nameof(currency), currency);
+        }
+
+        public async Task<IEnumerable<ExchangeTransaction>> GetWithdrawalHistoryAsync(string currency)
+        {
+            return await Cache.CacheMethod(MethodCachePolicy, async () => await OnGetWithdrawalHistoryAsync(currency), nameof(GetDepositHistoryAsync), nameof(currency), currency);
         }
 
         /// <summary>
@@ -750,6 +785,17 @@ namespace ExchangeSharp
             marketSymbol = NormalizeMarketSymbol(marketSymbol);
             return await Cache.CacheMethod(MethodCachePolicy, async () => (await OnGetCompletedOrderDetailsAsync(marketSymbol, afterDate)).ToArray(), nameof(GetCompletedOrderDetailsAsync),
                 nameof(marketSymbol), marketSymbol, nameof(afterDate), afterDate);
+        }
+
+        /// <summary>
+        /// ASYNC - Get the details of all trades
+        /// </summary>
+        /// <param name="symbol">Symbol to get trades for or null for all</param>
+        /// <returns>All trades for the specified symbol, or all if null symbol</returns>
+        public async Task<IEnumerable<ExchangeOrderResult>> GetMyTradesAsync(string symbol = null, DateTime? afterDate = null)
+        {
+            await new SynchronizationContextRemover();
+            return await OnGetMyTradesAsync(symbol, afterDate);
         }
 
         /// <summary>

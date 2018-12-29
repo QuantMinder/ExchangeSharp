@@ -136,6 +136,16 @@ namespace ExchangeSharp
                 };
                 markets.Add(market);
             }
+
+            JToken coinToken = await MakeJsonRequestAsync<JToken>("/market/open/coins");
+            foreach (JToken coin in coinToken)
+            {
+                var symbols = markets.Where(x => x.BaseCurrency == coin["coin"].ToStringInvariant());
+                symbols.ToList().ForEach(x => {
+                    var amountPrecision = coin["tradePrecision"].ConvertInvariant<int>();
+                    x.QuantityStepSize = Convert.ToDecimal(Math.Pow(10, -amountPrecision));
+                });
+            }
             return markets;
         }
 

@@ -673,7 +673,7 @@ namespace ExchangeSharp
             }
 
             List<ExchangeOrderResult> orders = new List<ExchangeOrderResult>();
-            JToken result = await MakeJsonRequestAsync<JToken>(path);
+            JToken result = await MakeJsonRequestAsync<JToken>(path, null, await GetNoncePayloadAsync());
             var totalTrades = result["count"].ConvertInvariant<int>();
             result = result["trades"];
             //symbol = NormalizeSymbol(symbol);

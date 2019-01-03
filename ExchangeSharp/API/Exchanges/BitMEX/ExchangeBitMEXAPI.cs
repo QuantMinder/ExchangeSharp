@@ -23,7 +23,7 @@ using Newtonsoft.Json.Linq;
 
 namespace ExchangeSharp
 {
-    public sealed partial class ExchangeBitMEXAPI : ExchangeAPI
+    public partial class ExchangeBitMEXAPI : ExchangeAPI
     {
         public override string BaseUrl { get; set; } = "https://www.bitmex.com/api/v1";
         public override string BaseUrlWebSocket { get; set; } = "wss://www.bitmex.com/realtime";
@@ -506,7 +506,7 @@ namespace ExchangeSharp
         {
             List<ExchangeOrderResult> orders = new List<ExchangeOrderResult>();
             Dictionary<string, object> payload = await GetNoncePayloadAsync();
-            string query = $"/order?filter={{\"orderID\": \"{orderId}\"}}";
+            string query = string.IsNullOrEmpty(orderId) ? $"/order?" :  $"/order?filter={{\"orderID\": \"{orderId}\"}}";
             JToken token = await MakeJsonRequestAsync<JToken>(query, BaseUrl, payload, "GET");
             foreach (JToken order in token)
             {

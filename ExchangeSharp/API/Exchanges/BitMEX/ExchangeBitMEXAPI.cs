@@ -11,6 +11,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 */
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
@@ -25,6 +26,15 @@ namespace ExchangeSharp
 {
     public partial class ExchangeBitMEXAPI : ExchangeAPI
     {
+        static ExchangeBitMEXAPI()
+        {
+            ExchangeGlobalCurrencyReplacements[typeof(ExchangeBitMEXAPI)] = new KeyValuePair<string, string>[]
+            {
+                new KeyValuePair<string, string>("XBT", "BTC"),
+                new KeyValuePair<string, string>("XBt", "BTC")
+            };
+        }
+
         public override string BaseUrl { get; set; } = "https://www.bitmex.com/api/v1";
         public override string BaseUrlWebSocket { get; set; } = "wss://www.bitmex.com/realtime";
         //public override string BaseUrl { get; set; } = "https://testnet.bitmex.com/api/v1";
@@ -269,6 +279,38 @@ namespace ExchangeSharp
 		    await _socket.SendMessageAsync(new { op = "subscribe", args = marketSymbols.Select(s => "trade:" + this.NormalizeMarketSymbol(s)).ToArray() });
 		}
             });
+        }
+
+        private ConcurrentDictionary<string, ExchangeOrderBook> cachedBooks = new ConcurrentDictionary<string, ExchangeOrderBook>();
+        private bool orderBookWebsocketConnected = false;
+
+        protected override async Task<ExchangeOrderBook> OnGetOrderBookAsync(string marketSymbol, int maxCount = 100)
+        {
+            var callback = new Action<ExchangeOrderBook>(
+                delegate (ExchangeOrderBook orderBook)
+                {
+                    cachedBooks[orderBook.MarketSymbol] = orderBook;
+                });
+
+            var symbols = new[] {"XBTUSD", "ETHUSD"};
+
+            if (!orderBookWebsocketConnected)
+            {
+                ExchangeAPIExtensions.GetFullOrderBookWebSocket(this, callback, 20, symbols);
+                orderBookWebsocketConnected = true;
+            }
+            
+            while (this.cachedBooks.Count < symbols.Length)
+            {
+                await Task.Delay(1000);
+            }
+
+            if (!this.cachedBooks.ContainsKey(marketSymbol))
+            {
+                throw new InvalidOperationException("Invalid market symbol '" + marketSymbol + "'");
+            }
+
+            return this.cachedBooks[marketSymbol];
         }
 
         protected override IWebSocket OnGetOrderBookWebSocket(Action<ExchangeOrderBook> callback, int maxCount = 20, params string[] marketSymbols)

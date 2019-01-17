@@ -10,17 +10,13 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 */
 
+using ExchangeSharp.API.Exchanges.BitMEX.Utils;
+using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
-using System.Net;
-using System.Text;
 using System.Threading.Tasks;
-using System.Web;
-
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 
 namespace ExchangeSharp
 {
@@ -35,6 +31,9 @@ namespace ExchangeSharp
             };
         }
 
+        private static decimal satoshis = 100000000;
+
+        public bool UseWebSocket = true;
         public override string BaseUrl { get; set; } = "https://www.bitmex.com/api/v1";
         public override string BaseUrlWebSocket { get; set; } = "wss://www.bitmex.com/realtime";
         //public override string BaseUrl { get; set; } = "https://testnet.bitmex.com/api/v1";
@@ -42,6 +41,10 @@ namespace ExchangeSharp
 
         private SortedDictionary<long, decimal> dict_long_decimal = new SortedDictionary<long, decimal>();
         private SortedDictionary<decimal, long> dict_decimal_long = new SortedDictionary<decimal, long>();
+
+        List<ExchangeTransaction> depositHistory = new List<ExchangeTransaction>();
+        List<ExchangeTransaction> withdrawalHistory = new List<ExchangeTransaction>();
+        List<ExchangeMarket> exchangeMarkets = new List<ExchangeMarket>();
 
         public ExchangeBitMEXAPI()
         {
@@ -61,7 +64,24 @@ namespace ExchangeSharp
 
         public override string ExchangeMarketSymbolToGlobalMarketSymbol(string marketSymbol)
         {
-            throw new NotImplementedException();
+            if (this.exchangeMarkets.Count == 0)
+            {
+                OnGetMarketSymbolsMetadataAsync().GetAwaiter().GetResult();
+            }
+
+            var market = this.exchangeMarkets.Where(x => { return x.MarketSymbol.ToUpper() == marketSymbol.ToUpper(); }).FirstOrDefault();
+            if (market == null)
+            {
+                return marketSymbol;
+            }
+
+            var baseCurrency = ExchangeGlobalCurrencyReplacements[typeof(ExchangeBitMEXAPI)]
+                .FirstOrDefault(x => x.Key == market.BaseCurrency).Value ?? market.BaseCurrency;
+
+            var quoteCurrency = ExchangeGlobalCurrencyReplacements[typeof(ExchangeBitMEXAPI)]
+                                   .FirstOrDefault(x => x.Key == market.QuoteCurrency).Value ?? market.QuoteCurrency;
+
+            return quoteCurrency + GlobalMarketSymbolSeparator + baseCurrency;
         }
 
         public override string GlobalMarketSymbolToExchangeMarketSymbol(string marketSymbol)
@@ -231,6 +251,8 @@ namespace ExchangeSharp
                 }
                 markets.Add(market);
             }
+
+            this.exchangeMarkets.AddRange(markets); // copy internally for reuse later
             return markets;
         }
 
@@ -313,7 +335,7 @@ namespace ExchangeSharp
             return this.cachedBooks[marketSymbol];
         }
 
-        protected override IWebSocket OnGetOrderBookWebSocket(Action<ExchangeOrderBook> callback, int maxCount = 20, params string[] marketSymbols)
+        protected override IWebSocket OnGetOrderBookWebSocket(Action<ExchangeOrderBook> callback, int maxCount = 25, params string[] marketSymbols)
         {
             /*
 {"info":"Welcome to the BitMEX Realtime API.","version":"2018-06-29T18:05:14.000Z","timestamp":"2018-07-05T14:22:26.267Z","docs":"https://www.bitmex.com/app/wsAPI","limit":{"remaining":39}}
@@ -394,7 +416,8 @@ namespace ExchangeSharp
                 {
                     marketSymbols = (await GetMarketSymbolsAsync()).ToArray();
                 }
-                await _socket.SendMessageAsync(new { op = "subscribe", args = marketSymbols.Select(s => "orderBookL2:" + this.NormalizeMarketSymbol(s)).ToArray() });
+                // limit to 25 orderbook entries
+                await _socket.SendMessageAsync(new { op = "subscribe", args = marketSymbols.Select(s => "orderBookL2_25:" + this.NormalizeMarketSymbol(s)).ToArray() });
             });
         }
 
@@ -482,13 +505,64 @@ namespace ExchangeSharp
 ]}
              */
 
-
-            Dictionary<string, decimal> amounts = new Dictionary<string, decimal>();
             var payload = await GetNoncePayloadAsync();
             JToken token = await MakeJsonRequestAsync<JToken>($"/user/margin?currency=all", BaseUrl, payload);
-            foreach (var item in token)
+            var amounts = ParseMargin(token);
+            return amounts;
+        }
+
+        public IWebSocket GetAmountsWebsocket(Action<Dictionary<string, decimal>> callback)
+        {
+            return SubscribeBitmexWebSocket("margin", (action, data) =>
             {
-                var balance = item["marginBalance"].ConvertInvariant<decimal>();
+                var amounts = ParseMargin(data);
+                callback(amounts);
+            });
+        }
+
+        public IWebSocket SubscribeBitmexWebSocket(string topic, Action<JToken, JToken> callback)
+        {
+            return ConnectWebSocket(string.Empty, (_socket, msg) =>
+            {
+                var str = msg.ToStringFromUTF8();
+                JToken token = JToken.Parse(str);
+
+                if (token["request"]?["op"]?.ToString() == "authKeyExpires")
+                {
+                    _socket.SendMessageAsync(new { op = "subscribe", args = topic }).GetAwaiter().GetResult();
+                }
+
+                if (token["table"] == null)
+                {
+                    return Task.CompletedTask;
+                }
+
+                var action = token["action"].ToStringInvariant();
+                JArray data = token["data"] as JArray;
+                callback(action, data);
+                return Task.CompletedTask;
+            }, async (_socket) =>
+            {
+                var authNonce = BitmexAuthentication.CreateAuthNonce();
+                var authPayload = BitmexAuthentication.CreateAuthPayload(authNonce);
+                var signature = BitmexAuthentication.CreateSignature(this.PrivateApiKey.ToUnsecureString(), authPayload);
+
+                await _socket.SendMessageAsync(new
+                {
+                    op = "authKeyExpires",
+                    args = new object[] { this.PublicApiKey.ToUnsecureString(), authNonce, signature }
+                });
+            });
+        }
+
+        
+
+        public Dictionary<string, decimal> ParseMargin(IEnumerable<JToken> data)
+        {
+            Dictionary<string, decimal> amounts = new Dictionary<string, decimal>();
+            foreach (var item in data)
+            {
+                var balance = item["marginBalance"].ConvertInvariant<decimal>() / satoshis;
                 var currency = item["currency"].ToStringInvariant();
 
                 if (amounts.ContainsKey(currency))
@@ -500,6 +574,7 @@ namespace ExchangeSharp
                     amounts[currency] = balance;
                 }
             }
+
             return amounts;
         }
 
@@ -556,6 +631,96 @@ namespace ExchangeSharp
             }
 
             return orders[0];
+        }
+
+        protected override async Task<IEnumerable<ExchangeOrderResult>> OnGetCompletedOrderDetailsAsync(
+            string marketSymbol = null, DateTime? afterDate = null)
+        {
+            List<ExchangeOrderResult> orders = new List<ExchangeOrderResult>();
+            Dictionary<string, object> payload = await GetNoncePayloadAsync();
+            var query = "/order?filter={\"ordStatus\": \"Filled\"}";
+            if (!string.IsNullOrWhiteSpace(marketSymbol))
+            {
+                query += "&symbol=" + NormalizeMarketSymbol(marketSymbol);
+            }
+
+            JToken token = await MakeJsonRequestAsync<JToken>(query, BaseUrl, payload, "GET");
+            foreach (JToken order in token)
+            {
+                orders.Add(ParseOrder(order));
+            }
+
+            return orders;
+        }
+
+        protected override async Task<IEnumerable<ExchangeOrderResult>> OnGetMyTradesAsync(string marketSymbol = null,
+            DateTime? afterDate = null, DateTime? beforeDate = null)
+        {
+            List<ExchangeOrderResult> trades = new List<ExchangeOrderResult>();
+            Dictionary<string, object> payload = await GetNoncePayloadAsync();
+            var query = "/execution/tradeHistory?filter={\"execType\": \"Trade\"}";
+            if (!string.IsNullOrWhiteSpace(marketSymbol))
+            {
+                query += "symbol=" + NormalizeMarketSymbol(marketSymbol);
+            }
+
+            JToken token = await MakeJsonRequestAsync<JToken>(query, BaseUrl, payload, "GET");
+            foreach (JToken trade in token)
+            {
+                trades.Add(ParseTrade(trade));
+            }
+
+            return trades;
+        }
+
+        public IWebSocket GetMyTradesWebSocket(Action<IEnumerable<ExchangeOrderResult>> callback, 
+            string symbol = null,
+            DateTime? afterDate = null, DateTime? beforeDate = null)
+        {
+            return SubscribeBitmexWebSocket("execution", (action, data) =>
+            {
+                // TODO: to be implemented.
+            });
+        }
+
+        private ExchangeAPIOrderResult ParseOrderStatus(string status)
+        {
+            switch (status)
+            {
+                case "PartiallyFilled":
+                    return ExchangeAPIOrderResult.FilledPartially;
+                case "Filled":
+                    return ExchangeAPIOrderResult.Filled;
+                case "New":
+                    return ExchangeAPIOrderResult.Pending;
+                case "PendingCancel":
+                    return ExchangeAPIOrderResult.PendingCancel;
+                default:
+                    return ExchangeAPIOrderResult.Unknown;
+            }
+        }
+
+        private ExchangeOrderResult ParseTrade(JToken token)
+        {
+            var status = token["ordStatus"].ToStringInvariant();
+            var price = token["price"].ConvertInvariant<decimal>();
+            ExchangeOrderResult result = new ExchangeOrderResult
+            {
+                Result = ParseOrderStatus(status),
+                Amount = token["lastQty"].ConvertInvariant<decimal>() / price,
+                AmountFilled = token["lastQty"].ConvertInvariant<decimal>() / price,
+                Price = price,
+                AveragePrice = price,
+                IsBuy = token["side"].ToStringInvariant() == "Buy",
+                OrderDate = token["transactTime"].ConvertInvariant<DateTime>(),
+                OrderId = token["orderID"].ToStringInvariant(),
+                TradeId = token["execID"].ToStringInvariant(),
+                Fees = token["commission"].ConvertInvariant<decimal>(),
+                FeesCurrency = token["currency"].ToStringInvariant(),
+                MarketSymbol = token["symbol"].ToStringInvariant()
+            };
+
+            return result;
         }
 
         protected override async Task OnCancelOrderAsync(string orderId, string marketSymbol = null)
@@ -678,32 +843,145 @@ namespace ExchangeSharp
             return result;
         }
 
+        protected override async Task<IEnumerable<ExchangeTransaction>> OnGetDepositHistoryAsync(string currency)
+        {
+            /*
+            {[
+              {
+                "transactID": "00000000-0000-0000-0000-000000000000",
+                "account": 158801,
+                "currency": "XBt",
+                "transactType": "UnrealisedPNL",
+                "amount": 2910,
+                "fee": 0,
+                "transactStatus": "Pending",
+                "address": "XBTUSD",
+                "tx": "",
+                "text": "",
+                "transactTime": null,
+                "walletBalance": 16858068,
+                "marginBalance": 16860978,
+                "timestamp": null
+              },
+              {
+                "transactID": "ef6628db-5c95-74a7-05f1-346a95d8ca2d",
+                "account": 158801,
+                "currency": "XBt",
+                "transactType": "Deposit",
+                "amount": 15847649,
+                "fee": null,
+                "transactStatus": "Completed",
+                "address": "",
+                "tx": "",
+                "text": "",
+                "transactTime": "2018-12-28T10:08:43.942Z",
+                "walletBalance": 16858225,
+                "marginBalance": null,
+                "timestamp": "2018-12-28T10:08:43.942Z"
+              },
+              {
+                "transactID": "a86eb8f5-0fc8-ebc7-14bd-ffb932c55d2a",
+                "account": 158801,
+                "currency": "XBt",
+                "transactType": "RealisedPNL",
+                "amount": 13,
+                "fee": 0,
+                "transactStatus": "Completed",
+                "address": "XBTUSD",
+                "tx": "f3f04d8e-10f3-a8cc-2d97-2dc1d2cee7fe",
+                "text": "",
+                "transactTime": "2018-12-05T12:00:00Z",
+                "walletBalance": 1000013,
+                "marginBalance": null,
+                "timestamp": "2018-12-05T12:00:00.261Z"
+              },
+              {
+                "transactID": "ff6508ed-4e9b-75f5-63f8-b20297db79c5",
+                "account": 158801,
+                "currency": "XBt",
+                "transactType": "Transfer",
+                "amount": 1000000,
+                "fee": null,
+                "transactStatus": "Completed",
+                "address": "0",
+                "tx": "c309fb1a-6b6e-1e7e-1ec6-86a9b33b1a2f",
+                "text": "Signup bonus",
+                "transactTime": "2018-12-03T10:05:40.046Z",
+                "walletBalance": 1000000,
+                "marginBalance": null,
+                "timestamp": "2018-12-03T10:05:40.046Z"
+              }
+            ]}
+             */
+            Dictionary<string, object> payload = await GetNoncePayloadAsync();
+            var query = $@"/user/walletHistory?";
+            if (!string.IsNullOrWhiteSpace(currency))
+            {
+                query += "currency={currency}" + NormalizeMarketSymbol(currency);
+            }
+
+            JToken token = await MakeJsonRequestAsync<JToken>(query, BaseUrl, payload, "GET");
+
+            foreach (JToken transaction in token)
+            {
+                var txn = new ExchangeTransaction();
+                txn.Currency = transaction["currency"].ToStringInvariant();
+                txn.Timestamp = transaction["transactTime"].ToDateTimeInvariant();
+                txn.PaymentId = transaction["transactID"].ToStringInvariant();
+                txn.Amount = transaction["amount"].ConvertInvariant<decimal>() / satoshis;
+                txn.TxFee = transaction["fee"].ConvertInvariant<decimal>();
+                var status = transaction["transactStatus"].ToStringInvariant();
+                txn.Status = status == "Completed"
+                    ? TransactionStatus.Complete
+                    : status == "Pending" ? TransactionStatus.Processing
+                    : TransactionStatus.Unknown;
+
+                var txnType = transaction["transactType"].ToStringInvariant();
+                if (txnType == "Transfer" || txnType == "Deposit")
+                {
+                    depositHistory.Add(txn);
+                }
+
+                if (txnType == "Withdrawal")
+                {
+                    withdrawalHistory.Add(txn);
+                }
+                // TODO: save wallet and margin balance somewhere
+            }
+
+            return depositHistory;
+        }
+
+        protected override async Task<IEnumerable<ExchangeTransaction>> OnGetWithdrawalHistoryAsync(string currency)
+        {
+            return withdrawalHistory;
+        }
 
         //private decimal GetInstrumentTickSize(ExchangeMarket market)
-        //{
-        //    if (market.MarketName == "XBTUSD")
-        //    {
-        //        return 0.01m;
-        //    }
-        //    return market.PriceStepSize.Value;
-        //}
+            //{
+            //    if (market.MarketName == "XBTUSD")
+            //    {
+            //        return 0.01m;
+            //    }
+            //    return market.PriceStepSize.Value;
+            //}
 
-        //private ExchangeMarket GetMarket(string symbol)
-        //{
-        //    var m = GetSymbolsMetadata();
-        //    return m.Where(x => x.MarketName == symbol).First();
-        //}
+            //private ExchangeMarket GetMarket(string symbol)
+            //{
+            //    var m = GetSymbolsMetadata();
+            //    return m.Where(x => x.MarketName == symbol).First();
+            //}
 
-        //private decimal GetPriceFromID(long id, ExchangeMarket market)
-        //{
-        //    return ((100000000L * market.Idx) - id) * GetInstrumentTickSize(market);
-        //}
+            //private decimal GetPriceFromID(long id, ExchangeMarket market)
+            //{
+            //    return ((100000000L * market.Idx) - id) * GetInstrumentTickSize(market);
+            //}
 
-        //private long GetIDFromPrice(decimal price, ExchangeMarket market)
-        //{
-        //    return (long)((100000000L * market.Idx) - (price / GetInstrumentTickSize(market)));
-        //}
-    }
+            //private long GetIDFromPrice(decimal price, ExchangeMarket market)
+            //{
+            //    return (long)((100000000L * market.Idx) - (price / GetInstrumentTickSize(market)));
+            //}
+        }
 
     public partial class ExchangeName { public const string BitMEX = "BitMEX"; }
 }

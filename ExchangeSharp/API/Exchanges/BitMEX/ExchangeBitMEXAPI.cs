@@ -225,7 +225,7 @@ namespace ExchangeSharp
 
             List<ExchangeMarket> markets = new List<ExchangeMarket>();
             JToken allSymbols = await MakeJsonRequestAsync<JToken>("/instrument?count=500&reverse=false");
-			foreach (JToken marketSymbolToken in allSymbols)
+            foreach (JToken marketSymbolToken in allSymbols)
             {
                 var market = new ExchangeMarket
                 {
@@ -272,12 +272,12 @@ namespace ExchangeSharp
                 var str = msg.ToStringFromUTF8();
                 JToken token = JToken.Parse(str);
 
-				if (token["error"] != null)
-				{
-					Logger.Info(token["error"].ToStringInvariant());
-					return Task.CompletedTask;
-				}
-				else if (token["table"] == null)
+                if (token["error"] != null)
+                {
+                    Logger.Info(token["error"].ToStringInvariant());
+                    return Task.CompletedTask;
+                }
+                else if (token["table"] == null)
                 {
                     return Task.CompletedTask;
                 }
@@ -294,12 +294,12 @@ namespace ExchangeSharp
             {
                 if (marketSymbols == null || marketSymbols.Length == 0)
                 {
-		    await _socket.SendMessageAsync(new { op = "subscribe", args = "trade" });
-		}
-		else
-		{
-		    await _socket.SendMessageAsync(new { op = "subscribe", args = marketSymbols.Select(s => "trade:" + this.NormalizeMarketSymbol(s)).ToArray() });
-		}
+                    await _socket.SendMessageAsync(new { op = "subscribe", args = "trade" });
+                }
+                else
+                {
+                    await _socket.SendMessageAsync(new { op = "subscribe", args = marketSymbols.Select(s => "trade:" + this.NormalizeMarketSymbol(s)).ToArray() });
+                }
             });
         }
 
@@ -314,14 +314,14 @@ namespace ExchangeSharp
                     cachedBooks[orderBook.MarketSymbol] = orderBook;
                 });
 
-            var symbols = new[] {"XBTUSD", "ETHUSD"};
+            var symbols = new[] { "XBTUSD", "ETHUSD" };
 
             if (!orderBookWebsocketConnected)
             {
                 ExchangeAPIExtensions.GetFullOrderBookWebSocket(this, callback, 20, symbols);
                 orderBookWebsocketConnected = true;
             }
-            
+
             while (this.cachedBooks.Count < symbols.Length)
             {
                 await Task.Delay(1000);
@@ -555,7 +555,7 @@ namespace ExchangeSharp
             });
         }
 
-        
+
 
         public Dictionary<string, decimal> ParseMargin(IEnumerable<JToken> data)
         {
@@ -623,7 +623,7 @@ namespace ExchangeSharp
         {
             List<ExchangeOrderResult> orders = new List<ExchangeOrderResult>();
             Dictionary<string, object> payload = await GetNoncePayloadAsync();
-            string query = string.IsNullOrEmpty(orderId) ? $"/order?" :  $"/order?filter={{\"orderID\": \"{orderId}\"}}";
+            string query = string.IsNullOrEmpty(orderId) ? $"/order?" : $"/order?filter={{\"orderID\": \"{orderId}\"}}";
             JToken token = await MakeJsonRequestAsync<JToken>(query, BaseUrl, payload, "GET");
             foreach (JToken order in token)
             {
@@ -661,7 +661,7 @@ namespace ExchangeSharp
             var query = "/execution/tradeHistory?filter={\"execType\": \"Trade\"}";
             if (!string.IsNullOrWhiteSpace(marketSymbol))
             {
-                query += "symbol=" + NormalizeMarketSymbol(marketSymbol);
+                query += "&symbol=" + NormalizeMarketSymbol(marketSymbol);
             }
 
             JToken token = await MakeJsonRequestAsync<JToken>(query, BaseUrl, payload, "GET");
@@ -673,7 +673,7 @@ namespace ExchangeSharp
             return trades;
         }
 
-        public IWebSocket GetMyTradesWebSocket(Action<IEnumerable<ExchangeOrderResult>> callback, 
+        public IWebSocket GetMyTradesWebSocket(Action<IEnumerable<ExchangeOrderResult>> callback,
             string symbol = null,
             DateTime? afterDate = null, DateTime? beforeDate = null)
         {
@@ -958,30 +958,30 @@ namespace ExchangeSharp
         }
 
         //private decimal GetInstrumentTickSize(ExchangeMarket market)
-            //{
-            //    if (market.MarketName == "XBTUSD")
-            //    {
-            //        return 0.01m;
-            //    }
-            //    return market.PriceStepSize.Value;
-            //}
+        //{
+        //    if (market.MarketName == "XBTUSD")
+        //    {
+        //        return 0.01m;
+        //    }
+        //    return market.PriceStepSize.Value;
+        //}
 
-            //private ExchangeMarket GetMarket(string symbol)
-            //{
-            //    var m = GetSymbolsMetadata();
-            //    return m.Where(x => x.MarketName == symbol).First();
-            //}
+        //private ExchangeMarket GetMarket(string symbol)
+        //{
+        //    var m = GetSymbolsMetadata();
+        //    return m.Where(x => x.MarketName == symbol).First();
+        //}
 
-            //private decimal GetPriceFromID(long id, ExchangeMarket market)
-            //{
-            //    return ((100000000L * market.Idx) - id) * GetInstrumentTickSize(market);
-            //}
+        //private decimal GetPriceFromID(long id, ExchangeMarket market)
+        //{
+        //    return ((100000000L * market.Idx) - id) * GetInstrumentTickSize(market);
+        //}
 
-            //private long GetIDFromPrice(decimal price, ExchangeMarket market)
-            //{
-            //    return (long)((100000000L * market.Idx) - (price / GetInstrumentTickSize(market)));
-            //}
-        }
+        //private long GetIDFromPrice(decimal price, ExchangeMarket market)
+        //{
+        //    return (long)((100000000L * market.Idx) - (price / GetInstrumentTickSize(market)));
+        //}
+    }
 
     public partial class ExchangeName { public const string BitMEX = "BitMEX"; }
 }
